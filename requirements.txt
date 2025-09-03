@@ -1,10 +1,25 @@
 # ---- Core web app ----
 streamlit==1.36.0
 
-# faiss-cpu==1.8.0.post1
-# sentence-transformers==2.7.0
-# torch
-# transformers
+
+
+# I/O + text
+pypdf==4.3.1
+pdfminer.six==20231228
+python-docx==1.1.2
+docx2txt==0.8.0
+chardet==5.2.0
+langid==1.1.6
+lxml==5.2.2
+
+# Embeddings / FAISS
+faiss-cpu==1.8.0.post1
+sentence-transformers==2.7.0
+torch                 # CPU wheel will install on Py3.11
+transformers
+
+# Azure OpenAI
+openai>=1.40.0
 
 
 # ---- Numerical / plotting ----
