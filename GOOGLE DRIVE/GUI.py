@@ -7,10 +7,11 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 import matplotlib
 import textwrap
+from pathlib import Path
 
 # ---------- Config ----------
-HIST_CSV = "Histogram_Data.csv"   # expects numeric column 'value'
-TABLE_CSV = "Table_Data.csv"      # expects 5 columns
+HIST_CSV = Path("Histogram_Data.csv")   # expects numeric column 'value'
+TABLE_CSV = Path("Table_Data.csv")      # expects 5 columns
 
 # Theme
 BG = "#000000"
@@ -56,17 +57,15 @@ except Exception:
 
 # ---------- Root grid: Left | Divider | Right (DEFAULT 40:60) ----------
 root.grid_rowconfigure(0, weight=1)
-# 40:60 via weights 2:3
-root.grid_columnconfigure(0, weight=2, uniform="cols", minsize=400)  # left ~40%
-root.grid_columnconfigure(1, weight=0, minsize=2)                    # divider
-root.grid_columnconfigure(2, weight=3, uniform="cols", minsize=600)  # right ~60%
+root.grid_columnconfigure(0, weight=2, uniform="cols", minsize=400)
+root.grid_columnconfigure(1, weight=0, minsize=2)
+root.grid_columnconfigure(2, weight=3, uniform="cols", minsize=600)
 
 # ====== LEFT PANE ======
 left = tk.Frame(root, bg=BG)
 left.grid(row=0, column=0, sticky="nsew")
-
-left.grid_rowconfigure(0, weight=0)   # title
-left.grid_rowconfigure(1, weight=1)   # rows (buttons + logs)
+left.grid_rowconfigure(0, weight=0)
+left.grid_rowconfigure(1, weight=1)
 left.grid_columnconfigure(0, weight=1)
 
 left_title = tk.Label(left, text="RAG CV Analysis Tool",
@@ -120,31 +119,24 @@ def add_left_row(r, btn_text, btn_bg, btn_active_bg, command, worklog_text=""):
 divider = tk.Frame(root, bg="white", width=2)
 divider.grid(row=0, column=1, sticky="ns")
 
-# ====== RIGHT PANE (exact 40% plot / 60% table using place) ======
+# ====== RIGHT PANE (40% plot / 60% table using place) ======
 right = tk.Frame(root, bg=BG)
 right.grid(row=0, column=2, sticky="nsew")
-right.update_idletasks()  # ensure it has a size
+right.update_idletasks()
 
-# Containers with fixed relative heights
 plot_container  = tk.Frame(right, bg=BG)
 table_container = tk.Frame(right, bg=BG)
-# EXACT same split, just ensure stacking & no rounding overlap
 plot_container.place(relx=0, rely=0.00, relwidth=1, relheight=0.55)
 table_container.place(relx=0, rely=0.55, relwidth=1, relheight=0.65)
-
-# keep the plot above the table if pixels collide
 plot_container.lift()
 
-# Inner frames with padding (so padding doesn't change the ratio)
-plot_frame = tk.Frame(plot_container, bg=BG) ##BG
+plot_frame = tk.Frame(plot_container, bg=BG)
 plot_frame.pack(fill="both", expand=True, padx=2, pady=(0, 0))
-
 table_frame = tk.Frame(table_container, bg=BG)
 table_frame.pack(fill="both", expand=True, padx=2, pady=(0, 0))
 
-# Ensure the table internals fill horizontally and vertically
-table_frame.grid_rowconfigure(0, weight=0)  # title
-table_frame.grid_rowconfigure(1, weight=1)  # canvases region
+table_frame.grid_rowconfigure(0, weight=0)
+table_frame.grid_rowconfigure(1, weight=1)
 table_frame.grid_columnconfigure(0, weight=1)
 
 # ---------- Matplotlib theme ----------
@@ -158,7 +150,6 @@ matplotlib.rcParams.update({
     "ytick.color": FG,
 })
 
-# Placeholders
 plot_placeholder = tk.Label(plot_frame, text="Analyse CVs to view results",
                             font=("Verdana", 14, "bold"), fg="white", bg="gray25")
 plot_placeholder.place(relx=0.5, rely=0.5, anchor="center")
@@ -222,10 +213,8 @@ def wrap_header_two_lines(text: str, width_chars: int = 80):
 def draw_table(table_df, table_cols, header_canvas, body_canvas, tk_header_font, tk_table_font):
     body_canvas.delete("all")
     header_canvas.delete("all")
-
     view_w = max(1, body_canvas.winfo_width())
     col_widths = compute_col_widths(view_w)
-
     df = table_df.copy()
     wrapped_lines = []
     for i, val in enumerate(df.iloc[:, WRAP_COLUMN_INDEX].tolist()):
@@ -235,13 +224,10 @@ def draw_table(table_df, table_cols, header_canvas, body_canvas, tk_header_font,
     wrapped_lines = [min(MAX_ROW_LINES, n) for n in wrapped_lines]
     ROW_LINE_HEIGHT = 16
     row_heights = [max(ROW_LINE_HEIGHT, n * ROW_LINE_HEIGHT) for n in wrapped_lines]
-
     col_x = [0]
     for w in col_widths:
         col_x.append(col_x[-1] + w)
     table_width = col_x[-1]
-
-    # Header
     header_texts, header_lines_counts = [], []
     for i, title in enumerate(table_cols):
         wrapped = wrap_header_two_lines(str(title), width_chars=FIXED_WRAP_CHARS)
@@ -250,7 +236,6 @@ def draw_table(table_df, table_cols, header_canvas, body_canvas, tk_header_font,
     header_max_lines = max(header_lines_counts) if header_lines_counts else 1
     header_h = max(24, header_max_lines * (tk_header_font.metrics("linespace") + 2) + 6)
     header_canvas.configure(scrollregion=(0, 0, table_width, header_h), height=header_h)
-
     for i, wrapped_title in enumerate(header_texts):
         x0, x1 = col_x[i], col_x[i+1]
         header_canvas.create_rectangle(x0, 0, x1, header_h, fill=HEADER_BG, outline=GRID_COLOR, width=1)
@@ -264,8 +249,6 @@ def draw_table(table_df, table_cols, header_canvas, body_canvas, tk_header_font,
         else:
             header_canvas.create_text((x0 + x1)/2, header_h/2,
                                       text=wrapped_title, fill=FG, font=HEADER_FONT, anchor="center")
-
-    # Body
     y = 0
     for r in range(len(df)):
         rh = row_heights[r]
@@ -284,31 +267,25 @@ def draw_table(table_df, table_cols, header_canvas, body_canvas, tk_header_font,
             body_canvas.create_line(x1, y, x1, y + rh, fill=GRID_COLOR)
         body_canvas.create_line(0, y + rh, table_width, y + rh, fill=GRID_COLOR)
         y += rh
-
     body_canvas.create_line(0, 0, 0, y, fill=GRID_COLOR)
     body_canvas.configure(scrollregion=(0, 0, table_width, y))
     header_canvas.configure(width=body_canvas.winfo_width())
 
 # ====== Analyse CVs action ======
 def analyse_cvs():
-    # Freeze window size during rebuild to avoid a visible jump
     root.update_idletasks()
     w, h = root.winfo_width(), root.winfo_height()
     root.minsize(w, h)
     root.maxsize(w, h)
-
     try:
         if plot_placeholder and plot_placeholder.winfo_exists():
             plot_placeholder.destroy()
         if table_placeholder and table_placeholder.winfo_exists():
             table_placeholder.destroy()
-
         for wdg in plot_frame.winfo_children():
             wdg.destroy()
         for wdg in table_frame.winfo_children():
             wdg.destroy()
-
-        # ---------- Load Data ----------
         try:
             hist_df = pd.read_csv(HIST_CSV)
             hist_col = 'value' if 'value' in hist_df.columns else hist_df.select_dtypes(include=[np.number]).columns.tolist()[0]
@@ -316,7 +293,6 @@ def analyse_cvs():
             messagebox.showerror("Error", f"Failed to load {HIST_CSV}:\n{e}")
             hist_df = pd.DataFrame({'value': np.random.randn(200)})
             hist_col = 'value'
-
         try:
             table_df = pd.read_csv(TABLE_CSV)
         except Exception as e:
@@ -328,7 +304,6 @@ def analyse_cvs():
                 "Column 4 (very long title example)": [f"R{r+1}C4" for r in range(12)],
                 "Details / Description": [f"This is some longer wrapped text example row {r+1}. " * 2 for r in range(12)],
             })
-
         if table_df.shape[1] < 5:
             for i in range(5 - table_df.shape[1]):
                 table_df[f"Col{table_df.shape[1] + i + 1}"] = ""
@@ -336,20 +311,17 @@ def analyse_cvs():
             table_df = table_df.iloc[:, :5]
         table_cols = [str(c) for c in table_df.columns.tolist()]
 
-        # ---------- Histogram ----------
+        # Histogram
         fig = Figure(dpi=100)
         ax = fig.add_subplot(111)
         fig.patch.set_facecolor(BG)
         ax.set_facecolor(BG)
-
         vals = pd.to_numeric(hist_df[hist_col], errors='coerce').dropna().values
         hist_out = ax.hist(vals, bins=BINS, edgecolor=GRID_COLOR, linewidth=1.0)
         patches = hist_out[2]
         for p in patches: p.set_facecolor(BAR_COLOR)
         if patches: patches[-1].set_facecolor(LAST_BAR_COLOR)
-
         for spine in ax.spines.values(): spine.set_visible(False)
-
         ax.set_title("Histogram of Applicants Scores",
                      fontname=TITLE_FONT[0], fontsize=TITLE_FONT[1],
                      fontweight=TITLE_FONT[2], color=FG)
@@ -357,33 +329,26 @@ def analyse_cvs():
                       fontweight=AXIS_FONT[2], color=FG)
         ax.set_ylabel("Frequency", fontname=AXIS_FONT[0], fontsize=AXIS_FONT[1],
                       fontweight=AXIS_FONT[2], color=FG)
-
         for tick in ax.get_xticklabels() + ax.get_yticklabels():
             tick.set_fontname(TABLE_FONT[0]); tick.set_fontsize(TICK_FONT_SIZE)
-
         canvas = FigureCanvasTkAgg(fig, master=plot_frame)
         cw = canvas.get_tk_widget()
         cw.configure(bg=BG, highlightthickness=0, bd=0)
         cw.pack(expand=True)
-
         def on_canvas_configure(_):
             fig.subplots_adjust(left=0.10, right=0.98, top=0.82, bottom=0.26)
             canvas.draw_idle()
         cw.bind("<Configure>", on_canvas_configure)
-
         fig.subplots_adjust(left=0.10, right=0.98, top=0.88, bottom=0.14)
         canvas.draw()
 
-        # ---------- Table ----------
+        # Table
         title_label = tk.Label(table_frame, text="Top 5 Applicants", font=TITLE_FONT, fg=FG, bg=BG)
         title_label.grid(row=0, column=0, sticky="w", padx=6, pady=(2, 4))
-
         outer = tk.Frame(table_frame, bg=BG)
         outer.grid(row=1, column=0, sticky="nsew", padx=2, pady=2)
-
         inner = tk.Frame(outer, bg=BG)
         inner.pack(fill="both", expand=True, padx=1, pady=1)
-
         header_canvas = tk.Canvas(inner, bg=BG, highlightthickness=0, bd=0)
         body_canvas   = tk.Canvas(inner, bg=BG, highlightthickness=0, bd=0)
         header_canvas.grid(row=0, column=0, sticky="ew")
@@ -391,19 +356,14 @@ def analyse_cvs():
         inner.grid_rowconfigure(0, weight=0)
         inner.grid_rowconfigure(1, weight=1)
         inner.grid_columnconfigure(0, weight=1)
-
         tk_table_font  = tkfont.Font(root=root, font=TABLE_FONT)
         tk_header_font = tkfont.Font(root=root, font=HEADER_FONT)
-
         def trigger_table_draw(*_):
             body_canvas.after_idle(lambda: draw_table(table_df, table_cols, header_canvas, body_canvas, tk_header_font, tk_table_font))
-
         body_canvas.bind("<Configure>", trigger_table_draw)
         table_frame.update_idletasks()
         trigger_table_draw()
-
     finally:
-        # Unfreeze after the layout settles (prevents visible jump)
         root.after(100, lambda: (root.minsize(0, 0), root.maxsize(1_000_000, 1_000_000)))
 
 # ----- Left rows -----
