@@ -16,17 +16,16 @@ import subprocess
 from pathlib import Path
 from collections import Counter
 from typing import Tuple, List, Optional, Dict, Any
+import contextlib
 
 # ======= CONFIG =======
-CV_DIRECTORY = Path(
-    r"C:\Users\BenjaminBusby\OneDrive - MONOCLE SOLUTIONS (PTY) LTD\Documents\Monocle AI Challenge\CV Database"
-)
-USE_OCR_FALLBACK = False  # set True only if you’ve installed Tesseract + pdf2image
+SCRIPT_DIR = Path(__file__).resolve().parent
+CV_DIRECTORY = SCRIPT_DIR.parent / "CV database"  # relative path
+USE_OCR_FALLBACK = False  # set True only if Tesseract + pdf2image installed
 
-# Precedence thresholds
-MIN_LEN_CHARS = 200      # 1) length gate: below this => immediate "too little text"
+MIN_LEN_CHARS = 200
 MAX_LEN_CHARS = 15000
-MIN_LANG_CHARS = 120     # min chars required before attempting language detection
+MIN_LANG_CHARS = 120
 
 # ======= OPTIONAL DEPENDENCIES =======
 try:
@@ -45,7 +44,7 @@ except Exception:
     PdfReader = None
 
 try:
-    import docx  # python-docx
+    import docx
 except Exception:
     docx = None
 
@@ -66,7 +65,7 @@ except Exception:
     pytesseract = None
     convert_from_path = None
 
-# ======= Heuristics =======
+# ======= Heuristics / Patterns =======
 SECTION_KEYWORDS = {
     "experience", "work experience", "employment", "professional experience",
     "education", "qualifications", "skills", "projects", "certifications",
@@ -89,7 +88,7 @@ EN_STOPWORDS = {
     "we","our","you","your","they","their","he","she","his","her","them"
 }
 
-# ======= Extraction =======
+# ======= Extraction functions =======
 def read_txt(path: Path) -> str:
     for enc in ("utf-8", "cp1252", "latin-1"):
         try:
@@ -147,14 +146,13 @@ def is_real_docx(path: Path) -> bool:
     except Exception:
         return False
 
-# ---- Converters for legacy .doc masquerading as .docx ----
 def convert_doc_to_docx_via_word(src: Path, dst: Path) -> bool:
     try:
-        import win32com.client  # type: ignore
+        import win32com.client
         word = win32com.client.Dispatch("Word.Application")
         word.Visible = False
         doc = word.Documents.Open(str(src))
-        doc.SaveAs(str(dst), FileFormat=16)  # wdFormatXMLDocument
+        doc.SaveAs(str(dst), FileFormat=16)
         doc.Close(False)
         word.Quit()
         return dst.exists() and dst.stat().st_size > 0
@@ -162,11 +160,7 @@ def convert_doc_to_docx_via_word(src: Path, dst: Path) -> bool:
         return False
 
 def find_soffice() -> Optional[str]:
-    candidates = [
-        "soffice",
-        r"C:\Program Files\LibreOffice\program\soffice.exe",
-        r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
-    ]
+    candidates = ["soffice", "/usr/bin/soffice", "/usr/lib/libreoffice/program/soffice"]
     for c in candidates:
         which = shutil.which(c)
         if which:
@@ -201,7 +195,7 @@ def ensure_true_docx(path: Path) -> Tuple[Path, Optional[str]]:
     converted = convert_doc_to_docx_via_soffice(path, temp_out)
     if converted:
         return converted, None
-    return path, "conversion failed (no Word/LibreOffice or error during conversion)"
+    return path, "conversion failed (no Word/LibreOffice or error)"
 
 def read_docx(path: Path) -> Tuple[str, List[str]]:
     reasons: List[str] = []
@@ -209,7 +203,7 @@ def read_docx(path: Path) -> Tuple[str, List[str]]:
     if not is_real_docx(path):
         converted_path, conv_reason = ensure_true_docx(path)
         if conv_reason:
-            return "", [f"not a real .docx (bad zip) — {conv_reason}"]
+            return "", [f"not a real .docx — {conv_reason}"]
         actual_path = converted_path
     if docx2txt:
         try:
@@ -218,13 +212,10 @@ def read_docx(path: Path) -> Tuple[str, List[str]]:
                 return text, []
         except Exception as e:
             reasons.append(f"docx2txt error: {e}")
-    else:
-        reasons.append("docx2txt not installed")
     if docx:
         try:
             d = docx.Document(str(actual_path))
-            parts: List[str] = []
-            parts.extend(p.text for p in d.paragraphs if p.text and p.text.strip())
+            parts: List[str] = [p.text for p in d.paragraphs if p.text and p.text.strip()]
             for tbl in d.tables:
                 for row in tbl.rows:
                     for cell in row.cells:
@@ -234,17 +225,15 @@ def read_docx(path: Path) -> Tuple[str, List[str]]:
                 hdr = getattr(sec, "header", None)
                 ftr = getattr(sec, "footer", None)
                 if hdr:
-                    parts.extend(p.text for p in hdr.paragraphs if p.text and p.text.strip())
+                    parts.extend(p.text for p in hdr.paragraphs if p.text.strip())
                 if ftr:
-                    parts.extend(p.text for p in ftr.paragraphs if p.text and p.text.strip())
+                    parts.extend(p.text for p in ftr.paragraphs if p.text.strip())
             text = "\n".join(parts)
             if len(text.strip()) >= 10:
                 return text, []
             reasons.append("python-docx extracted too little text")
         except Exception as e:
             reasons.append(f"python-docx error: {e}")
-    else:
-        reasons.append("python-docx not installed")
     try:
         with zipfile.ZipFile(str(actual_path), "r") as z:
             text = _docx_xml_texts_from(z)
@@ -257,7 +246,7 @@ def read_docx(path: Path) -> Tuple[str, List[str]]:
         reasons.append("docx empty or unreadable")
     return "", reasons
 
-# ======= Language (strict) =======
+# ======= Language & CV heuristics =======
 _hira = re.compile(r"[\u3040-\u309F]")
 _kata = re.compile(r"[\u30A0-\u30FF]")
 _kanji = re.compile(r"[\u4E00-\u9FFF]")
@@ -279,7 +268,6 @@ def _script_ratios(s: str) -> dict:
     return {"latin_ratio": counts["latin"]/total, "cjk_ratio": counts["cjk"]/total, "jp_punct": counts["jp_punct"]}
 
 def detect_english_strict(text: str) -> Tuple[bool, str]:
-    """Only call if len(text) >= MIN_LANG_CHARS (precedence handled in main)."""
     toks = _tokenizer.findall(text.lower())[:400]
     sw_hits = sum(1 for t in toks if t in EN_STOPWORDS)
     sw_uniq = len({t for t in toks if t in EN_STOPWORDS})
@@ -290,18 +278,17 @@ def detect_english_strict(text: str) -> Tuple[bool, str]:
         lang, prob = langid.classify(text)
         lid_vote, lid_prob = lang, prob
     if cjk_r >= 0.10 and latin_r <= 0.75:
-        return False, f"language: non-English (CJK {cjk_r:.0%}, Latin {latin_r:.0%})"
+        return False, f"CJK ratio {cjk_r:.0%}, Latin {latin_r:.0%}"
     if sw_hits < 6 and sw_uniq < 5:
         if not (lid_vote == "en" and lid_prob >= 0.97 and cjk_r < 0.03):
-            return False, f"language: non-English (stopwords hits={sw_hits}, unique={sw_uniq})"
+            return False, f"stopwords hits={sw_hits}, unique={sw_uniq}"
     if jp_p >= 5 and sw_hits < 10:
         if not (lid_vote == "en" and lid_prob >= 0.98):
-            return False, f"language: non-English (JP punctuation={jp_p}, stopwords={sw_hits})"
+            return False, f"JP punctuation={jp_p}, stopwords hits={sw_hits}"
     if lid_vote and lid_vote != "en" and lid_prob >= 0.90 and latin_r < 0.85:
-        return False, f"language: non-English by model ({lid_vote}, p≈{lid_prob:.2f})"
+        return False, f"non-English by model {lid_vote}, p≈{lid_prob:.2f}"
     return True, ""
 
-# ======= CV checks =======
 def looks_like_cv(text: str, threshold: int = 4) -> Tuple[bool, List[str]]:
     t = text.lower()
     signals = 0
@@ -309,9 +296,9 @@ def looks_like_cv(text: str, threshold: int = 4) -> Tuple[bool, List[str]]:
     if len(text) >= MIN_LEN_CHARS: signals += 1
     else: failed.append("too little text")
     if any(kw in t for kw in SECTION_KEYWORDS): signals += 1
-    else: failed.append("no CV section keywords")
+    else: failed.append("no section keywords")
     if any(kw in t for kw in CV_CLUES): signals += 1
-    else: failed.append("no explicit CV terms")
+    else: failed.append("no CV terms")
     if EMAIL_PAT.search(text): signals += 1
     else: failed.append("no email")
     if PHONE_PAT.search(text): signals += 1
@@ -324,18 +311,14 @@ def looks_like_cv(text: str, threshold: int = 4) -> Tuple[bool, List[str]]:
 
 # ======= Core runner =======
 def gatekeep(callback=None) -> Dict[str, Any]:
-    """
-    Runs the gatekeeper checks, optionally streaming messages via callback(str).
-    Returns dict with processed, rejected, error_types, bad_files (list of filenames), bad_stems (list).
-    """
     supported = {".pdf", ".docx", ".txt"}
     files = [p for p in CV_DIRECTORY.rglob("*") if p.is_file() and p.suffix.lower() in supported]
 
     processed = 0
     rejected = 0
     error_types = Counter()
-    bad_files: List[str] = []   # filenames (e.g., "CV_0457.pdf")
-    bad_stems: List[str] = []   # stems (e.g., "CV_0457")
+    bad_files: List[str] = []
+    bad_stems: List[str] = []
 
     def emit(line: str):
         if callback:
@@ -356,43 +339,38 @@ def gatekeep(callback=None) -> Dict[str, Any]:
                 text = read_txt(p)
                 extract_fail_reason = "txt: empty or unreadable" if not text.strip() else ""
 
-            # Extraction failure
             if not text.strip():
-                emit(f"[{p.name}] No CV detected. Failed tests: extraction: {extract_fail_reason or 'no text'}")
+                emit(f"[{p.name}] No CV detected. Failed: {extract_fail_reason or 'no text'}")
                 rejected += 1
                 error_types["empty_text"] += 1
                 bad_files.append(p.name); bad_stems.append(p.stem)
                 continue
 
-            # 1) LENGTH gate
             if len(text) < MIN_LEN_CHARS:
-                emit(f"[{p.name}] \nNo CV detected, omitted. Failed tests: too little text (<{MIN_LEN_CHARS} chars)")
+                emit(f"[{p.name}] Too short (<{MIN_LEN_CHARS})")
                 rejected += 1
                 error_types["too_short"] += 1
                 bad_files.append(p.name); bad_stems.append(p.stem)
                 continue
             elif len(text) > MAX_LEN_CHARS:
-                emit(f"[{p.name}] \nNo CV detected, omitted. Failed tests: too much text (>{MAX_LEN_CHARS} chars)")
+                emit(f"[{p.name}] Too long (>{MAX_LEN_CHARS})")
                 rejected += 1
                 error_types["too_long"] += 1
                 bad_files.append(p.name); bad_stems.append(p.stem)
                 continue
 
-
-            # 2) LANGUAGE gate
             if len(text) >= MIN_LANG_CHARS:
                 is_en, lang_reason = detect_english_strict(text)
                 if not is_en:
-                    emit(f"[{p.name}] \nNot in English, omitted. ({lang_reason})")
+                    emit(f"[{p.name}] Non-English ({lang_reason})")
                     rejected += 1
                     error_types["non_english"] += 1
                     bad_files.append(p.name); bad_stems.append(p.stem)
                     continue
 
-            # 3) CV heuristic
-            is_cv, failed = looks_like_cv(text, threshold=4)
+            is_cv, failed = looks_like_cv(text)
             if not is_cv:
-                emit(f"[{p.name}] \nNo CV detected. Failed tests: {', '.join(failed)}")
+                emit(f"[{p.name}] Not a CV: {', '.join(failed)}")
                 rejected += 1
                 error_types["not_cv"] += 1
                 bad_files.append(p.name); bad_stems.append(p.stem)
@@ -419,19 +397,12 @@ def gatekeep(callback=None) -> Dict[str, Any]:
         "bad_stems": bad_stems,
     }
 
-# ======= CLI main =======
+# ======= CLI =======
 def main():
     gatekeep(callback=None)
 
-# ======= GUI hook: redirect print() to callback and return bad_files =======
-import contextlib
-
+# ======= GUI hook =======
 def run_from_gui(callback):
-    """
-    Runs gatekeep() and streams every print() line to `callback(str)`.
-    Returns the result dict (incl. bad_files, bad_stems) for programmatic use.
-    Safe to call from a background thread in GUI.
-    """
     class _CallbackWriter:
         def write(self, s):
             s = s.rstrip("\n")
@@ -450,10 +421,6 @@ def run_from_gui(callback):
     return result_holder
 
 def run_and_get_bad_files(callback=None) -> List[str]:
-    """
-    Convenience: runs gatekeep and returns list of filenames that failed checks.
-    If callback is provided, messages are streamed to it.
-    """
     res = gatekeep(callback=callback)
     return res.get("bad_files", [])
 
