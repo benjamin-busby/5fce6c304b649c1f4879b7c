@@ -1,4 +1,4 @@
-# ---- Core web app (Streamlit) ----
+# ---- Core web app ----
 streamlit==1.36.0
 
 # ---- Numerical / plotting ----
@@ -13,25 +13,18 @@ python-docx==1.1.2
 docx2txt==0.8.0
 chardet==5.2.0
 langid==1.1.6
-lxml==5.2.2   # for DOCX XML parsing
-
-# ---- Cleaning & utilities (Agent3) ----
-# (stdlib only; no extra packages)
+lxml==5.2.2
 
 # ---- Embeddings / FAISS (Agent4/Agent5) ----
 faiss-cpu==1.8.0.post1
 sentence-transformers==2.7.0
-torch             # CPU wheel will be installed automatically
-transformers      # pulled by sentence-transformers but listed explicitly
+torch                 # CPU wheel will be installed automatically
+transformers
 
 # ---- Azure OpenAI client (Agent5) ----
 openai>=1.40.0
 
-# ---- Optional OCR fallback for PDFs (Agent1) ----
-# Uncomment these ONLY if you enable USE_OCR_FALLBACK=True and add system deps.
-# pytesseract==0.3.10
+# ---- Optional OCR (disabled by default in Agent1) ----
 # pdf2image==1.17.0
+# pytesseract==0.3.10
 # pillow==10.3.0
-# NOTE: Streamlit Cloud would also need system binaries:
-#  - tesseract-ocr
-#  - poppler-utils
