@@ -1,0 +1,79 @@
+Thandi 
+
+Molefe
+
+Manager
+
+
+
+
+
+
+
+Profile
+
+Skilled digital transformation consultant with 6 years implementing automation, AI and digital strategies for insurers and retail banks in South Africa.
+
+
+
+
+
+Education
+
+University of Cape Town
+
+BSc (Computer Science & Finance), 2017
+
+
+
+University of Stellenbosch Business School
+
+Postgrad Diploma in Digital Business, 2020
+
+
+
+Contact
+
+Cape Town
+
++27 82 222 3344
+
+thandi.molefe@example.com
+
+
+
+Experience
+
+Nedbank (Digital Strategy Analyst)
+
+2018–2021
+
+Assisted in launching chatbot and robotic process automation pilots for customer service.
+
+
+
+Liberty Group (Technology Consultant)
+
+2021–Present
+
+Leading AI initiative (claims automation) using machine learning; defined digital roadmap and automation governance frameworks.
+
+
+
+Skills:
+
+RPA, AI/machinelearning (TensorFlow, scikitlearn)
+
+Chatbot and machinevision deployment
+
+Digital enterprise roadmaps
+
+Agile delivery, DevOps liaison
+
+Technical stakeholder management
+
+Interests:
+
+AI & fintech meetup speaker
+
+Yoga, product design thinking workshops
