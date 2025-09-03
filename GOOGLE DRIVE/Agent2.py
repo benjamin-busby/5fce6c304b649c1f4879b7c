@@ -1,6 +1,8 @@
-# Agent2.py
-# Text extraction for each CV, import-friendly API, and ability to exclude files
-# (e.g., bad files identified by Agent1).
+"""
+Agent2 — CV Text Extractor
+- Processes CVs from a folder and outputs .txt
+- Import-friendly API, can exclude files (e.g., bad files from Agent1)
+"""
 
 from pathlib import Path
 import csv
@@ -12,10 +14,9 @@ import docx2txt
 import chardet
 
 # ---- Defaults (override when calling) ----
-DEFAULT_CV_DIRECTORY = Path(
-    r"C:\Users\BenjaminBusby\OneDrive - MONOCLE SOLUTIONS (PTY) LTD\Documents\Monocle AI Challenge\CV Database"
-)
-DEFAULT_OUTPUT_DIRECTORY = Path("Raw Text")  # created under current working directory
+SCRIPT_DIR = Path(__file__).resolve().parent
+DEFAULT_CV_DIRECTORY = SCRIPT_DIR.parent / "CV database"
+DEFAULT_OUTPUT_DIRECTORY = SCRIPT_DIR / "Raw Text"
 SUPPORTED_EXTS = {".pdf", ".docx", ".txt"}
 
 # ---- Readers ----
@@ -43,24 +44,6 @@ def process_cvs(
     exclude_sources: Optional[Iterable[str]] = None,
     write_csv: bool = True,
 ) -> Dict[str, Any]:
-    """
-    Process CVs from cv_directory and write extracted text files to output_directory.
-
-    Parameters
-    ----------
-    cv_directory : Path
-        Root folder to search for CV files (recursively).
-    output_directory : Path
-        Folder where .txt outputs and metadata/error CSVs will be written.
-    exclude_sources : Iterable[str] or None
-        Filenames (e.g. "CV_0457.pdf") or stems (e.g. "CV_0457") to skip.
-    write_csv : bool
-        If True, writes metadata.csv and error_log.csv (if any).
-
-    Returns
-    -------
-    dict with keys: processed, errors, skipped, meta_rows, error_rows, meta_csv, err_csv, error_summary_by_type
-    """
     output_directory.mkdir(parents=True, exist_ok=True)
 
     excluded: set[str] = set()
@@ -81,12 +64,12 @@ def process_cvs(
     for p in sorted(files):
         ext = p.suffix.lower()
 
-        # Exclusion by full path or stem or filename
+        # Exclusion
         if str(p).lower() in excluded or p.stem.lower() in excluded or p.name.lower() in excluded:
             skipped += 1
             continue
 
-        # Skip unsupported types silently
+        # Skip unsupported
         if ext not in SUPPORTED_EXTS:
             skipped += 1
             continue
@@ -96,7 +79,7 @@ def process_cvs(
                 text, pages = read_pdf(p)
             elif ext == ".docx":
                 text, pages = read_docx(p), None
-            else:  # ".txt"
+            else:
                 text, pages = read_txt(p), None
 
             out_path = output_directory / (p.stem + ".txt")
@@ -129,19 +112,13 @@ def process_cvs(
 
     if write_csv:
         with meta_csv.open("w", newline="", encoding="utf-8") as f:
-            w = csv.DictWriter(
-                f,
-                fieldnames=["source_path", "output_path", "ext", "size_bytes", "chars", "pdf_pages"]
-            )
+            w = csv.DictWriter(f, fieldnames=["source_path", "output_path", "ext", "size_bytes", "chars", "pdf_pages"])
             w.writeheader()
             w.writerows(meta_rows)
 
         if error_rows:
             with err_csv.open("w", newline="", encoding="utf-8") as f:
-                w = csv.DictWriter(
-                    f,
-                    fieldnames=["source_path", "ext", "size_bytes", "error_type", "error_msg"]
-                )
+                w = csv.DictWriter(f, fieldnames=["source_path", "ext", "size_bytes", "error_type", "error_msg"])
                 w.writeheader()
                 w.writerows(error_rows)
 
@@ -156,7 +133,7 @@ def process_cvs(
         "error_summary_by_type": dict(error_types),
     }
 
-# ---- GUI-friendly convenience summary ----
+# ---- GUI-friendly convenience ----
 def run_text_extraction(
     cv_directory: Path = DEFAULT_CV_DIRECTORY,
     output_directory: Path = DEFAULT_OUTPUT_DIRECTORY,
@@ -177,7 +154,7 @@ def run_text_extraction(
             summary += f"\nError Summary (by type): {details}"
     return summary
 
-# ---- Optional: pull bad files from Agent1 and exclude automatically ----
+# ---- Optional: exclude bad files from Agent1 ----
 def run_text_extraction_excluding_agent1(
     cv_directory: Path = DEFAULT_CV_DIRECTORY,
     output_directory: Path = DEFAULT_OUTPUT_DIRECTORY,
@@ -186,11 +163,11 @@ def run_text_extraction_excluding_agent1(
     try:
         import Agent1
     except Exception as e:
-        return f"Could not import Agent1 to obtain exclusions: {e}"
+        return f"Could not import Agent1: {e}"
     try:
         bad_files = Agent1.run_and_get_bad_files(callback=None)
     except Exception as e:
-        return f"Failed to obtain bad files from Agent1: {e}"
+        return f"Failed to get bad files from Agent1: {e}"
     return run_text_extraction(
         cv_directory=cv_directory,
         output_directory=output_directory,
