@@ -10,7 +10,6 @@ Agent5 - Rank CVs with Azure OpenAI (GUI-friendly)
 
 import os, json, csv, re, time
 from pathlib import Path
-from collections import defaultdict
 from textwrap import shorten
 from typing import List, Tuple, Dict, Optional, Callable
 from datetime import datetime
@@ -21,9 +20,9 @@ import pandas as pd
 from sentence_transformers import SentenceTransformer
 from openai import AzureOpenAI
 
-# ---------- Paths (aligned with Agent4 defaults) ----------
+# ---------- Paths ----------
 SCRIPT_DIR = Path(__file__).resolve().parent
-INDEX_DIR  = SCRIPT_DIR / "Index"          # matches Agent4.INDEX_DIR
+INDEX_DIR  = SCRIPT_DIR / "Index"
 INDEX_PATH = INDEX_DIR / "faiss.index"
 OUT_CSV    = INDEX_DIR / "ranked.csv"
 
@@ -62,7 +61,7 @@ AZURE_OPENAI_DEPLOYMENT   = os.getenv("AZURE_OPENAI_DEPLOYMENT",   "gpt-4o-mini"
 LLM_TEMPERATURE = 0.2
 LLM_MAX_TOKENS  = 220
 
-# ---------- Metadata loading ----------
+# ---------- Metadata helpers ----------
 _JOBJ_RE = re.compile(r'\{.*\}', re.DOTALL)
 
 def _clean_json_line(s: str) -> Optional[str]:
@@ -86,7 +85,6 @@ def find_meta_file() -> Path:
 def load_meta() -> List[Dict]:
     p = find_meta_file()
     suffix = p.suffix.lower()
-
     if suffix == ".csv":
         df = pd.read_csv(p)
         cols = {c.lower(): c for c in df.columns}
@@ -97,20 +95,17 @@ def load_meta() -> List[Dict]:
             {"cv_id": r[cols["cv_id"]], "chunk_id": int(r[cols["chunk_id"]]), "path": str(r[cols["path"]])}
             for _, r in df.iterrows()
         ]
-
     text = p.read_text(encoding="utf-8-sig", errors="ignore").strip()
     if not text:
         raise ValueError(f"{p} is empty.")
-
     if text[0] == "[":
         data = json.loads(text)
         if not isinstance(data, list):
             raise ValueError("Top-level JSON is not a list.")
         return data
-
     rows, bad = [], 0
     with p.open("rb") as f:
-        for i, bline in enumerate(f, 1):
+        for bline in f:
             s = bline.decode("utf-8-sig", errors="ignore").strip()
             if not s or s.startswith(("#","//")):
                 continue
@@ -122,7 +117,6 @@ def load_meta() -> List[Dict]:
                 rows.append(json.loads(s))
             except json.JSONDecodeError:
                 bad += 1
-                continue
     if not rows:
         raise ValueError(f"No valid records found in {p}. Lines rejected={bad}.")
     return rows
@@ -157,7 +151,7 @@ def group_top_snippets(meta, idxs, dists, per_cv: int):
             "score": float(score),
             "path": m["path"],
         })
-    for cv_id in list(grouped.keys()):
+    for cv_id in grouped:
         grouped[cv_id].sort(key=lambda x: x["score"], reverse=True)
         grouped[cv_id] = grouped[cv_id][:per_cv]
     return grouped
@@ -172,18 +166,15 @@ def load_snippet_previews(grouped: dict) -> Dict[str, List[Tuple[str,str]]]:
                 p = SCRIPT_DIR / p
             if p not in cache:
                 cache[p] = read_text(p)
-            preview = shorten(cache[p].replace("\n", " "), width=700, placeholder=" …")
-            snaps.append((f"{cv_id}#{it['chunk_id']}", preview))
+            preview_txt = shorten(cache[p].replace("\n", " "), width=700, placeholder=" …")
+            snaps.append((f"{cv_id}#{it['chunk_id']}", preview_txt))
         out[cv_id] = snaps
     return out
 
 # ---------- Prompt + parsing ----------
 def build_prompt(role_brief: str, snippets: List[Tuple[str, str]]) -> Tuple[str, str]:
     ctx = "\n\n".join(f"[{tag}] {txt}" for tag, txt in snippets)
-    system = (
-        "You are a recruiting assistant. Score strictly from the provided snippets. "
-        "Use only evidence in the snippets."
-    )
+    system = "You are a recruiting assistant. Score strictly from the provided snippets. Use only evidence in the snippets."
     user = f"""ROLE BRIEF:
 {role_brief}
 
@@ -200,14 +191,13 @@ Line 1: seven integers between 0 and 100, comma-separated, in this order:
 5) Leadership
 6) Culture
 7) Educational background
-Example: 82,76,90,79,70,65,65
 
-Line 2: a compact JSON object with three fields:
+Line 2: a compact JSON object with fields:
 {{"summary":"<2-4 sentences>","met":["..."],"missing":["..."]}}
 
 Rules:
 - If evidence is missing, be conservative in the score and list it in "missing".
-- Do not add any extra lines or text outside these two lines.
+- Do not add extra lines or text outside these two lines.
 """
     return system, user
 
@@ -230,11 +220,7 @@ def parse_summary_block(text: str) -> Dict:
     if start != -1 and end != -1 and end > start:
         try:
             obj = json.loads(text[start:end+1])
-            return {
-                "summary": obj.get("summary", ""),
-                "met": obj.get("met", []) or [],
-                "missing": obj.get("missing", []) or [],
-            }
+            return {"summary": obj.get("summary",""), "met": obj.get("met",[]), "missing": obj.get("missing",[])}
         except Exception:
             pass
     return {"summary": "", "met": [], "missing": []}
@@ -256,15 +242,11 @@ def score_with_llm(client: AzureOpenAI, system: str, user: str) -> Tuple[List[in
     )
     text = (resp.choices[0].message.content or "").strip()
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    if not lines:
-        raise ValueError("Empty response from model.")
-    scores = parse_seven_scores(lines[0])
+    scores = parse_seven_scores(lines[0]) if lines else [0]*7
     details = parse_summary_block("\n".join(lines[1:])) if len(lines) > 1 else {"summary":"","met":[],"missing":[]}
     return scores, details
 
-# ---------- Stable CSV writer ----------
 def safe_write_csv(df: pd.DataFrame, path: Path) -> str:
-    path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(f".tmp.{os.getpid()}.csv")
     last_err = None
@@ -284,7 +266,7 @@ def safe_write_csv(df: pd.DataFrame, path: Path) -> str:
     df.to_csv(alt, index=False, quoting=csv.QUOTE_MINIMAL)
     return str(alt.resolve())
 
-# ---------- Public function for GUI ----------
+# ---------- Main ranking function ----------
 def run_ranking(
     index_dir: Path = INDEX_DIR,
     role_brief: str = ROLE_BRIEF,
@@ -292,27 +274,12 @@ def run_ranking(
     per_cv: int = PER_CV,
     callback: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, object]:
-    """
-    Runs the full ranking pipeline and streams progress.
-    Emits: "X of Y CVs analysed." after each CV, then "Complete" at the end.
-
-    Returns:
-      {"total": Y, "processed": X, "out_csv": "...", "run_csv": "..."}
-    """
-    # Load resources
     index_path = index_dir / "faiss.index"
     if not index_path.exists():
         raise FileNotFoundError(f"FAISS index not found: {index_path.resolve()}")
     index = faiss.read_index(str(index_path))
-
-    # Metadata
-    global INDEX_DIR, INDEX_PATH, OUT_CSV
-    INDEX_DIR = index_dir
-    INDEX_PATH = index_path
-    OUT_CSV = index_dir / "ranked.csv"
     meta = load_meta()
 
-    # Retrieval
     model = SentenceTransformer(EMBED_MODEL)
     qv = embed_query(model, role_brief)
     D, I = index.search(qv, topn)
@@ -320,11 +287,9 @@ def run_ranking(
     grouped = group_top_snippets(meta, i, d, per_cv=per_cv)
     snippets_by_cv = load_snippet_previews(grouped)
 
-    # Loop over CVs with progress
     client = azure_client()
     rows = []
     total = len(snippets_by_cv)
-    processed = 0
 
     for processed, (cv_id, snippets) in enumerate(snippets_by_cv.items(), start=1):
         if callback:
@@ -346,34 +311,20 @@ def run_ranking(
             "missing": "; ".join(details.get("missing", [])),
         })
 
-    # Save outputs
-    cols = [
-        "cv_id",
-        "domain_finance",
-        "technical_analytical",
-        "engagement_communication",
-        "project_delivery",
-        "leadership",
-        "culture",
-        "education",
-        "summary",
-        "met",
-        "missing",
-    ]
-    df = pd.DataFrame(rows, columns=cols)
-    OUT_CSV.parent.mkdir(parents=True, exist_ok=True)
-    primary = safe_write_csv(df, OUT_CSV)
+    df = pd.DataFrame(rows)
+    primary = safe_write_csv(df, index_dir / "ranked.csv")
     run_copy = safe_write_csv(df, index_dir / f"ranked_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
 
     if callback:
         callback("Complete")
 
-    return {"total": total, "processed": processed, "out_csv": primary, "run_csv": run_copy}
+    return {"total": total, "processed": total, "out_csv": primary, "run_csv": run_copy}
 
-# ---------- CLI entry (optional) ----------
+# ---------- CLI ----------
 def main():
     res = run_ranking(callback=print)
     print(res)
 
 if __name__ == "__main__":
     main()
+
