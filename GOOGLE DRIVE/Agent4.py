@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 # VECTORISE_CVS.PY - build embeddings + FAISS index from cleaned TXT CVs
-# Now export functions so a GUI can call and capture output.
+# Export functions for GUI integration.
 
 from pathlib import Path
 import argparse, json, csv, os, time
-import unicodedata
 from typing import List, Dict, Any, Optional, Callable
 
 import numpy as np
@@ -12,21 +11,21 @@ import faiss
 from sentence_transformers import SentenceTransformer
 from textwrap import shorten
 
-# ----------------------------- PATHS (defaults match your GUI layout) ----------------------------- #
+# ----------------------------- PATHS ----------------------------- #
 HERE           = Path(__file__).resolve().parent
-CLEAN_TXT_DIR  = HERE / "Clean Text"                 # cleaned TXT CVs from Agent3
-INDEX_DIR      = HERE / "Index"                      # FAISS + metadata saved here
+CLEAN_TXT_DIR  = HERE / "Clean Text"
+INDEX_DIR      = HERE / "Index"
 INDEX_PATH     = INDEX_DIR / "faiss.index"
 META_JSONL     = INDEX_DIR / "metadata.jsonl"
 META_CSV       = INDEX_DIR / "metadata.csv"
 
-# --------------------------------- CONFIG ---------------------------------- #
-EMBED_MODEL   = "sentence-transformers/all-MiniLM-L6-v2"  # 384-d
+# ----------------------------- CONFIG ---------------------------- #
+EMBED_MODEL   = "sentence-transformers/all-MiniLM-L6-v2"
 CHUNK_WORDS   = 900
 CHUNK_OVERLAP = 120
 TOPK_DEFAULT  = 10
 
-# -------------------------------- HELPERS ---------------------------------- #
+# ----------------------------- HELPERS --------------------------- #
 def _emit(cb: Optional[Callable[[str], None]], msg: str):
     if cb:
         cb(msg)
@@ -34,7 +33,6 @@ def _emit(cb: Optional[Callable[[str], None]], msg: str):
         print(msg)
 
 def list_txt_files(root: Path):
-    """Yield .txt files case-insensitively, sorted."""
     if not root.exists():
         return []
     files = list(root.rglob("*.txt")) + list(root.rglob("*.TXT"))
@@ -47,7 +45,6 @@ def to_words(text: str):
     return text.split()
 
 def chunk_text_words(text: str, max_words=CHUNK_WORDS, overlap=CHUNK_OVERLAP):
-    """Split text into overlapping word chunks."""
     words = to_words(text)
     if not words:
         return []
@@ -67,10 +64,6 @@ def preview(text: str, width=140) -> str:
     return shorten(text.replace("\n", " "), width=width, placeholder="…")
 
 def safe_write_faiss(index: faiss.Index, path: Path, attempts: int = 8, cb=None) -> str:
-    """
-    Atomic write with retries to avoid Windows or OneDrive locks.
-    Returns the absolute path that was written.
-    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp.index")
@@ -78,7 +71,7 @@ def safe_write_faiss(index: faiss.Index, path: Path, attempts: int = 8, cb=None)
     for i in range(attempts):
         try:
             faiss.write_index(index, str(tmp))
-            os.replace(tmp, path)  # atomic on Windows
+            os.replace(tmp, path)
             _emit(cb, f"[save] FAISS index -> {path.resolve()}")
             return str(path.resolve())
         except PermissionError as e:
@@ -90,19 +83,13 @@ def safe_write_faiss(index: faiss.Index, path: Path, attempts: int = 8, cb=None)
                 except Exception: pass
     raise PermissionError(f"Could not update {path} due to lock: {last_err}")
 
-# ------------------------------- BUILD (core) ------------------------------------- #
+# ------------------------------- BUILD INDEX ------------------------------- #
 def build_index(
     clean_dir: Path = CLEAN_TXT_DIR,
     index_dir: Path = INDEX_DIR,
     verbose: bool = True,
     callback: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, Any]:
-    """
-    Build a FAISS index from cleaned text files.
-
-    Returns a dict summary with keys:
-      files, chunks, index_path, meta_jsonl, meta_csv
-    """
     index_dir.mkdir(parents=True, exist_ok=True)
     index_path = index_dir / "faiss.index"
     meta_jsonl = index_dir / "metadata.jsonl"
@@ -196,7 +183,7 @@ def build_index(
         "meta_csv": str(meta_csv.resolve()),
     }
 
-# ------------------------------- SEARCH (optional) -------------------------------- #
+# ------------------------------- SEARCH ------------------------------- #
 def load_index_and_meta(index_dir: Path = INDEX_DIR):
     index_path = index_dir / "faiss.index"
     meta_jsonl = index_dir / "metadata.jsonl"
@@ -237,7 +224,7 @@ def search(query: str, topk: int = TOPK_DEFAULT, index_dir: Path = INDEX_DIR, ca
         _emit(callback, f"{rank:>2}. score={score:.3f} | {m['cv_id']}#{m['chunk_id']} | {p.name}")
         _emit(callback, f"    {snip}\n")
 
-# -------------------------------- CLI (kept for standalone use) -------------------- #
+# ------------------------------- CLI ------------------------------- #
 def parse_args():
     ap = argparse.ArgumentParser(description="Build and query CV vector index (embeddings + FAISS).")
     ap.add_argument("--build", action="store_true", help="(Re)build the index from cleaned TXT CVs.")
