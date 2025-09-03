@@ -1,231 +1,201 @@
-# streamlit_app.py
-# Streamlit UI for your CV Analysis pipeline (Agents 1–5)
-from __future__ import annotations
-import os, sys
+#!/usr/bin/env python3
+# VECTORISE_CVS.PY - build embeddings + index from cleaned TXT CVs
+# Uses FAISS if available; otherwise falls back to NumPy dense search.
+
 from pathlib import Path
-import streamlit as st
-import pandas as pd
+import argparse, json, csv, os, time
+from typing import List, Dict, Any, Optional, Callable
 
-st.set_page_config(page_title="CV Analysis", layout="wide")
-st.title("CV Analysis – RAG Pipeline")
+import numpy as np
+from sentence_transformers import SentenceTransformer
+from textwrap import shorten
 
-# ---------- Locate agents & data folders ----------
-BASE = Path(__file__).resolve().parent
+# Try FAISS
+try:
+    import faiss  # type: ignore
+    _FAISS_AVAILABLE = True
+except Exception:
+    faiss = None
+    _FAISS_AVAILABLE = False
 
-def find_agents_dir() -> Path:
-    # Prefer ./app/, else repo root, else GOOGLE DRIVE/
-    candidates = [BASE / "app", BASE, BASE / "GOOGLE DRIVE"]
-    for d in candidates:
-        if (d / "Agent1.py").exists():
-            return d
-    # last resort: the one that has Agent4/5
-    for d in candidates:
-        for n in ["Agent4.py", "Agent5.py", "Agent2.py", "Agent3.py"]:
-            if (d / n).exists():
-                return d
-    return BASE
+HERE           = Path(__file__).resolve().parent
+CLEAN_TXT_DIR  = HERE / "Clean Text"
+INDEX_DIR      = HERE / "Index"
+INDEX_PATH     = INDEX_DIR / "faiss.index"
+EMB_NPY        = INDEX_DIR / "embeddings.npy"   # NumPy fallback
+META_JSONL     = INDEX_DIR / "metadata.jsonl"
+META_CSV       = INDEX_DIR / "metadata.csv"
 
-AGENTS_DIR = find_agents_dir()
-if str(AGENTS_DIR) not in sys.path:
-    sys.path.insert(0, str(AGENTS_DIR))
+EMBED_MODEL   = "sentence-transformers/all-MiniLM-L6-v2"
+CHUNK_WORDS   = 900
+CHUNK_OVERLAP = 120
+TOPK_DEFAULT  = 10
 
-RAW_DIR   = AGENTS_DIR / "Raw Text"
-CLEAN_DIR = AGENTS_DIR / "Clean Text"
-INDEX_DIR = AGENTS_DIR / "Index"
+def _emit(cb: Optional[Callable[[str], None]], msg: str):
+    (cb or print)(msg)
 
-def find_cv_db_dir() -> Path:
-    # case-insensitive fallback for your "CV Database"
-    candidates = [
-        BASE / "CV Database",
-        BASE / "CV database",
-        AGENTS_DIR.parent / "CV Database",
-        AGENTS_DIR.parent / "CV database",
-    ]
-    for p in candidates:
-        if p.exists():
-            return p
-    return BASE / "CV Database"
+def list_txt_files(root: Path):
+    if not root.exists():
+        return []
+    files = list(root.rglob("*.txt")) + list(root.rglob("*.TXT"))
+    return sorted({f.resolve() for f in files if f.is_file()})
 
-# ---------- Sidebar Controls ----------
-st.sidebar.header("Folders")
-cv_dir = st.sidebar.text_input("CV folder", value=str(find_cv_db_dir()))
-cv_path = Path(cv_dir)
+def read_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8", errors="ignore")
 
-with st.sidebar.expander("Advanced"):
-    st.caption("Agents directory (auto-detected):")
-    st.code(str(AGENTS_DIR))
-    st.caption("Raw/Clean/Index dirs (auto):")
-    st.code(f"RAW_DIR   = {RAW_DIR}\nCLEAN_DIR = {CLEAN_DIR}\nINDEX_DIR = {INDEX_DIR}")
+def to_words(text: str):
+    return text.split()
 
-st.sidebar.header("Actions")
-run_gatekeep = st.sidebar.button("1) Gatekeep (Agent1)")
-run_extract  = st.sidebar.button("2) Extract Text (Agent2)")
-run_clean    = st.sidebar.button("3) Clean Text (Agent3)")
-run_vector   = st.sidebar.button("4) Vectorise (Agent4)")
-run_rank     = st.sidebar.button("5) Rank (Agent5)")
-show_report  = st.sidebar.button("6) Analyse / Report")
+def chunk_text_words(text: str, max_words=CHUNK_WORDS, overlap=CHUNK_OVERLAP):
+    words = to_words(text)
+    if not words:
+        return []
+    chunks, step, i = [], max(1, max_words - overlap), 0
+    while i < len(words):
+        ch = " ".join(words[i:i+max_words]).strip()
+        if ch:
+            chunks.append(ch)
+        i += step
+    return chunks
 
-# keep bad files between steps
-if "agent1_bad_files" not in st.session_state:
-    st.session_state.agent1_bad_files = []
+def normalise_rows(v: np.ndarray) -> np.ndarray:
+    n = np.linalg.norm(v, axis=1, keepdims=True) + 1e-12
+    return v / n
 
-# ---------- Helpers ----------
-def ensure_dirs():
-    RAW_DIR.mkdir(parents=True, exist_ok=True)
-    CLEAN_DIR.mkdir(parents=True, exist_ok=True)
-    INDEX_DIR.mkdir(parents=True, exist_ok=True)
+def preview(text: str, width=140) -> str:
+    return shorten(text.replace("\n", " "), width=width, placeholder="…")
 
-def inject_azure_secrets():
-    # Read Azure OpenAI creds from Streamlit secrets if present
-    for k in ["AZURE_OPENAI_API_KEY",
-              "AZURE_OPENAI_ENDPOINT",
-              "AZURE_OPENAI_DEPLOYMENT",
-              "AZURE_OPENAI_API_VERSION"]:
-        if k in st.secrets:
-            os.environ[k] = str(st.secrets[k])
+def safe_write(path: Path, data: bytes):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "wb") as f:
+        f.write(data)
+    os.replace(tmp, path)
 
-# ---------- Main panel ----------
-st.write("### Pipeline Overview")
-st.markdown(
-    """
-    1. **Gatekeep** scans CVs and filters out non-English/too short/not-a-CV  
-    2. **Extract Text** converts PDFs/DOCX/TXT → raw TXT  
-    3. **Clean Text** tidies text and redacts emails/phones  
-    4. **Vectorise** builds embeddings & FAISS index from cleaned text  
-    5. **Rank (LLM)** scores CVs with Azure OpenAI using retrieved snippets  
-    6. **Analyse / Report** shows ranked results and summary visuals  
-    """
-)
+def build_index(
+    clean_dir: Path = CLEAN_TXT_DIR,
+    index_dir: Path = INDEX_DIR,
+    verbose: bool = True,
+    callback: Optional[Callable[[str], None]] = None,
+) -> Dict[str, Any]:
+    index_dir.mkdir(parents=True, exist_ok=True)
+    index_path = index_dir / "faiss.index"
+    emb_npy    = index_dir / "embeddings.npy"
+    meta_jsonl = index_dir / "metadata.jsonl"
+    meta_csv   = index_dir / "metadata.csv"
 
-ensure_dirs()
+    if not clean_dir.exists():
+        _emit(callback, f"[build] Missing input folder: {clean_dir}")
+        return {"files": 0, "chunks": 0, "index_path": None, "meta_jsonl": None, "meta_csv": None, "backend": "none"}
 
-# ---------- 1) Agent1: Gatekeep ----------
-if run_gatekeep:
-    with st.status("Running Agent1 (Gatekeeper)…", expanded=True) as status:
-        try:
-            import Agent1
-            # Fix the CV folder path (your code used 'CV database' — watch case)
-            Agent1.CV_DIRECTORY = Path(cv_path)
-            logs = []
+    _emit(callback, f"[paths] CLEAN_TXT_DIR = {clean_dir}")
+    _emit(callback, f"[paths] INDEX_DIR     = {index_dir}")
 
-            def cb(msg: str):
-                logs.append(msg)
+    _emit(callback, f"[embed] Loading model: {EMBED_MODEL}")
+    model = SentenceTransformer(EMBED_MODEL)
 
-            res = Agent1.gatekeep(callback=cb)
-            st.code("\n".join(logs) or "No logs.")
-            st.session_state.agent1_bad_files = res.get("bad_files", [])
-            status.update(label="Agent1 complete", state="complete")
-            st.success(f"Processed: {res['processed']} | Rejected: {res['rejected']}")
-            if res.get("error_types"):
-                st.info(f"Error types: {res['error_types']}")
-        except Exception as e:
-            status.update(label="Agent1 failed", state="error")
-            st.exception(e)
+    texts: List[str] = []
+    meta: List[Dict[str, Any]] = []
+    per_file_chunks: List[tuple[Path, int, int]] = []
 
-# ---------- 2) Agent2: Extract ----------
-if run_extract:
-    with st.status("Running Agent2 (Text Extraction)…", expanded=True) as status:
-        try:
-            import Agent2
-            summary = Agent2.run_text_extraction(
-                cv_directory=Path(cv_path),
-                output_directory=RAW_DIR,
-                exclude_files=st.session_state.agent1_bad_files,
-                write_csv=True,
-            )
-            status.update(label="Agent2 complete", state="complete")
-            st.success(summary)
-            meta = RAW_DIR / "metadata.csv"
-            if meta.exists():
-                st.dataframe(pd.read_csv(meta).head(50))
-        except Exception as e:
-            status.update(label="Agent2 failed", state="error")
-            st.exception(e)
+    files = list_txt_files(clean_dir)
+    _emit(callback, f"[scan] Found {len(files)} .txt files under {clean_dir}")
+    if verbose:
+        for p in files:
+            _emit(callback, f"       - {p}")
 
-# ---------- 3) Agent3: Clean ----------
-if run_clean:
-    with st.status("Running Agent3 (Cleaner)…", expanded=True) as status:
-        try:
-            import Agent3
-            res = Agent3.run_cleaning(
-                input_dir=RAW_DIR,
-                output_dir=CLEAN_DIR,
-                exclude_files=st.session_state.agent1_bad_files,
-                write_csv=True,
-            )
-            status.update(label="Agent3 complete", state="complete")
-            st.success(f"Processed: {res['processed']} | Errors: {res['errors']}")
-            meta = CLEAN_DIR / "metadata.csv"
-            if meta.exists():
-                st.dataframe(pd.read_csv(meta).head(50))
-        except Exception as e:
-            status.update(label="Agent3 failed", state="error")
-            st.exception(e)
+    for path in files:
+        raw = read_text(path).strip()
+        if not raw:
+            per_file_chunks.append((path, 0, 0))
+            continue
+        chunks = chunk_text_words(raw, CHUNK_WORDS, CHUNK_OVERLAP)
+        per_file_chunks.append((path, len(chunks), len(raw)))
+        cv_id = path.stem
+        for i, ch in enumerate(chunks):
+            texts.append(ch)
+            meta.append({
+                "cv_id": cv_id,
+                "chunk_id": i,
+                "path": str(path.resolve()),
+                "chars": len(ch),
+                "words": len(to_words(ch)),
+            })
 
-# ---------- 4) Agent4: Vectorise (FAISS) ----------
-if run_vector:
-    with st.status("Running Agent4 (Vectorise/Index)…", expanded=True) as status:
-        try:
-            import Agent4
-            out = Agent4.build_index(
-                clean_dir=CLEAN_DIR,
-                index_dir=INDEX_DIR,
-                verbose=True,
-                callback=lambda m: st.write(m),
-            )
-            status.update(label="Agent4 complete", state="complete")
-            st.success(f"Files: {out['files']} | Chunks: {out['chunks']}")
-            st.write(f"Index: {out['index_path']}")
-            meta = INDEX_DIR / "metadata.csv"
-            if meta.exists():
-                st.dataframe(pd.read_csv(meta).head(50))
-        except Exception as e:
-            status.update(label="Agent4 failed", state="error")
-            st.exception(e)
+    _emit(callback, "[scan] Per-file chunk counts:")
+    for path, cnt, chars in per_file_chunks:
+        _emit(callback, f"       {path.name}: chunks={cnt} chars={chars}")
 
-# ---------- 5) Agent5: Rank (Azure OpenAI) ----------
-if run_rank:
-    with st.status("Running Agent5 (LLM Ranking)…", expanded=True) as status:
-        try:
-            inject_azure_secrets()
-            import Agent5
-            res = Agent5.run_ranking(
-                index_dir=INDEX_DIR,
-                callback=lambda m: st.write(m),
-            )
-            status.update(label="Agent5 complete", state="complete")
-            st.success(res)
-            # offer download
-            out_csv = Path(res.get("out_csv" or "")) if isinstance(res, dict) else None
-            if out_csv and out_csv.exists():
-                st.download_button(
-                    "Download ranked.csv",
-                    data=out_csv.read_bytes(),
-                    file_name="ranked.csv",
-                )
-        except Exception as e:
-            status.update(label="Agent5 failed", state="error")
-            st.exception(e)
+    if not texts:
+        _emit(callback, "[build] No text found.")
+        return {"files": len(files), "chunks": 0, "index_path": None, "meta_jsonl": None, "meta_csv": None, "backend": "none"}
 
-# ---------- 6) Analyse / Report ----------
-if show_report:
-    st.subheader("Ranked Results")
-    ranked_csv = INDEX_DIR / "ranked.csv"
-    if not ranked_csv.exists():
-        st.warning("No ranked.csv found yet. Run step 5 first.")
+    total_files = len(files)
+    total_chunks = len(texts)
+    _emit(callback, f"[build] Files: {total_files} | Chunks: {total_chunks}")
+
+    _emit(callback, "[embed] Encoding chunks...")
+    X = model.encode(texts, convert_to_numpy=True, show_progress_bar=False, normalize_embeddings=False)
+    X = normalise_rows(X)
+
+    backend = "faiss" if _FAISS_AVAILABLE else "numpy"
+    _emit(callback, f"[build] Using backend: {backend}")
+
+    if _FAISS_AVAILABLE:
+        dim = X.shape[1]
+        idx = faiss.IndexFlatIP(dim)
+        idx.add(X)
+        faiss.write_index(idx, str(index_path))
+        index_path_out = str(index_path.resolve())
     else:
-        df = pd.read_csv(ranked_csv)
-        st.dataframe(df)
-        # Simple summary visuals
-        score_cols = [
-            c for c in df.columns
-            if c in ["domain_finance","technical_analytical","engagement_communication",
-                     "project_delivery","leadership","culture","education"]
-        ]
-        if score_cols:
-            df["average_score"] = df[score_cols].mean(axis=1).round(1)
-            st.write("Top by average score:")
-            top = df.sort_values("average_score", ascending=False).head(10)
-            st.bar_chart(top.set_index("cv_id")["average_score"])
-        else:
-            st.info("No score columns detected.")
+        # Save normalized embeddings for NumPy search
+        np.save(emb_npy, X)
+        index_path_out = str(emb_npy.resolve())
+
+    with meta_jsonl.open("w", encoding="utf-8") as f:
+        for row in meta:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    with meta_csv.open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=["cv_id", "chunk_id", "path", "chars", "words"])
+        w.writeheader(); w.writerows(meta)
+
+    _emit(callback, f"[save] Metadata JSONL: {meta_jsonl.resolve()}")
+    _emit(callback, f"[save] Metadata CSV : {meta_csv.resolve()}")
+    _emit(callback, "[done] Index built successfully.")
+
+    return {
+        "files": total_files,
+        "chunks": total_chunks,
+        "index_path": index_path_out,
+        "meta_jsonl": str(meta_jsonl.resolve()),
+        "meta_csv": str(meta_csv.resolve()),
+        "backend": backend,
+    }
+
+def load_index_and_meta(index_dir: Path = INDEX_DIR):
+    index_path = index_dir / "faiss.index"
+    emb_npy    = index_dir / "embeddings.npy"
+    meta_jsonl = index_dir / "metadata.jsonl"
+    if not meta_jsonl.exists():
+        raise FileNotFoundError("Metadata missing - run build_index first.")
+    meta = []
+    with meta_jsonl.open("r", encoding="utf-8") as f:
+        for line in f:
+            s = line.strip()
+            if s:
+                meta.append(json.loads(s))
+    if _FAISS_AVAILABLE and index_path.exists():
+        return "faiss", faiss.read_index(str(index_path)), meta
+    elif emb_npy.exists():
+        X = np.load(emb_npy)
+        return "numpy", X, meta
+    else:
+        raise FileNotFoundError("No index found (neither faiss.index nor embeddings.npy).")
+
+def embed_query(model, query: str) -> np.ndarray:
+    q = model.encode([query], convert_to_numpy=True, normalize_embeddings=False)
+    return normalise_rows(q)
+
+def search(query: str, topk: int = TOPK_DEFAULT, index_dir: Path = INDEX_DIR, callback=None):
+    model = SentenceTransformer(EMBED_MODEL)
+    backend, index_obj, meta =
